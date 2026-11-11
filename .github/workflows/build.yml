@@ -45,6 +45,14 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: bash scripts/setup_libretrodroid_netplay.sh
 
+      # Uji cepat (tanpa Android): logika rollback netplay dan server lobby (penandaan ZeroTier/Tailscale/LAN).
+      - name: Uji netplay + lobby
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          bash tests/run_netplay_test.sh
+          python3 tests/lobby_server_test.py
+
       # Mengunduh SEMUA core libretro (build Android) dari buildbot resmi.
       # Core wajib harus berhasil; core arcade tambahan opsional (dilewati bila tidak ada di buildbot).
       - name: Unduh core libretro
