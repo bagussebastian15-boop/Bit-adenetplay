@@ -1,0 +1,81 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Proyek bisa ada di root repo, atau repo hanya berisi EmulatorAllInOne.zip (diekstrak ke _project).
+      - name: Siapkan proyek
+        run: |
+          set -euo pipefail
+          if [ ! -f settings.gradle.kts ]; then
+            Z="$(ls -1 *EmulatorAllInOne*.zip 2>/dev/null | head -n1 || true)"
+            [ -z "$Z" ] && Z="$(ls -1 *.zip 2>/dev/null | head -n1 || true)"
+            if [ -n "$Z" ]; then
+              echo "Mengekstrak $Z ke _project"
+              rm -rf _project && mkdir _project && unzip -q "$Z" -d _project
+            fi
+          fi
+          S="$(find . -name settings.gradle.kts -not -path '*/node_modules/*' | head -n1)"
+          [ -z "$S" ] && { echo "settings.gradle.kts tidak ditemukan"; exit 1; }
+          echo "PROJECT_DIR=$(dirname "$S")" >> "$GITHUB_ENV"
+          echo "Proyek: $(dirname "$S")"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Terima lisensi Android SDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      # LibretroDroid dibangun dari sumber dengan patch multiplayer rollback (netplay).
+      - name: Siapkan LibretroDroid + netplay
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: bash scripts/setup_libretrodroid_netplay.sh
+
+      # Mengunduh SEMUA core libretro (build Android) dari buildbot resmi.
+      # Core wajib harus berhasil; core arcade tambahan opsional (dilewati bila tidak ada di buildbot).
+      - name: Unduh core libretro
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          ABIS="arm64-v8a armeabi-v7a" REFRESH="fbneo mame2010 mame2003_plus mame2003 mame2000 fbalpha2012" bash scripts/fetch_cores.sh
+
+      - name: Laporan core yang ikut di APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Core libretro di APK"
+            for abi in arm64-v8a armeabi-v7a; do
+              echo "### $abi"
+              ls -1 "app/src/main/jniLibs/$abi" 2>/dev/null | sed 's/^lib//; s/_libretro_android.so$//; s/^/- /' || true
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          for c in mgba snes9x genesis_plus_gx mame2010 fbneo; do
+            for abi in arm64-v8a armeabi-v7a; do
+              [ -s "app/src/main/jniLibs/$abi/lib${c}_libretro_android.so" ] || { echo "Core wajib hilang: $abi/$c"; exit 1; }
+            done
+          done
+
+      - name: Build APK debug
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle assembleDebug --stacktrace -Dorg.gradle.jvmargs="-Xmx4g"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EmulatorAllInOne-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          retention-days: 3
